@@ -25,12 +25,12 @@ const char* NTP_SERVER = "pool.ntp.org";
 const char* TZ_INFO    = "ECT5";
 
 // Servo channels ordered by compartment:
-//   Comp 0 → índices 0,1,2  → canales PCA 12,14,15
+//   Comp 0 → índices 0,1,2  → canales PCA 12,15,14
 //   Comp 1 → índices 3,4,5  → canales PCA 11, 9, 7
 //   Comp 2 → índices 6,7,8  → canales PCA  5, 4, 3
 // Secuencia dentro de cada grupo: abrir(0) → empujar(1) → cerrar(2)
 const uint8_t SERVO_CHANNELS[TOTAL_SERVOS] = {
-  12, 14, 15,   // Compartimento 0
+  12, 15, 14,   // Compartimento 0
   11,  9,  7,   // Compartimento 1
    5,  4,  3    // Compartimento 2
 };
