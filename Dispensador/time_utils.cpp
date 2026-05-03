@@ -1,11 +1,11 @@
 #include "time_utils.h"
 
 bool obtenerFechaHoraLocal(
-  String& fecha,
-  String& hora,
-  int* anio,
-  int* diaAnio,
-  int* minutoActual
+  char* fecha,
+  char* hora,
+  int16_t* anio,
+  int16_t* diaAnio,
+  int16_t* minutoActual
 ) {
   time_t now = time(nullptr);
   if (now < 24 * 3600) {
@@ -15,21 +15,17 @@ bool obtenerFechaHoraLocal(
   struct tm localNow;
   localtime_r(&now, &localNow);
 
-  char fechaBuff[11];
-  char horaBuff[9];
-  strftime(fechaBuff, sizeof(fechaBuff), "%Y-%m-%d", &localNow);
-  strftime(horaBuff, sizeof(horaBuff), "%H:%M:%S", &localNow);
-  fecha = fechaBuff;
-  hora = horaBuff;
+  if (fecha) strftime(fecha, 11, "%Y-%m-%d", &localNow);
+  if (hora) strftime(hora, 9, "%H:%M:%S", &localNow);
 
-  if (anio) *anio = localNow.tm_year + 1900;
-  if (diaAnio) *diaAnio = localNow.tm_yday;
-  if (minutoActual) *minutoActual = localNow.tm_hour * 60 + localNow.tm_min;
+  if (anio) *anio = static_cast<int16_t>(localNow.tm_year + 1900);
+  if (diaAnio) *diaAnio = static_cast<int16_t>(localNow.tm_yday);
+  if (minutoActual) *minutoActual = static_cast<int16_t>(localNow.tm_hour * 60 + localNow.tm_min);
 
   return true;
 }
 
-bool parseHoraProgramada(const char* horaDispenso, int& minutos) {
+bool parseHoraProgramada(const char* horaDispenso, int16_t& minutos) {
   if (horaDispenso == nullptr || strlen(horaDispenso) < 5) {
     return false;
   }
@@ -44,12 +40,12 @@ bool parseHoraProgramada(const char* horaDispenso, int& minutos) {
     return false;
   }
 
-  minutos = hh * 60 + mm;
+  minutos = static_cast<int16_t>(hh * 60 + mm);
   return true;
 }
 
 bool horaEnVentana(const char* horaDispenso) {
-  int targetMinutes = 0;
+  int16_t targetMinutes = 0;
   if (!parseHoraProgramada(horaDispenso, targetMinutes)) {
     return false;
   }
@@ -62,7 +58,7 @@ bool horaEnVentana(const char* horaDispenso) {
   struct tm localNow;
   localtime_r(&now, &localNow);
 
-  int currentMinutes = localNow.tm_hour * 60 + localNow.tm_min;
+  int16_t currentMinutes = static_cast<int16_t>(localNow.tm_hour * 60 + localNow.tm_min);
   int diff = abs(currentMinutes - targetMinutes);
   if (diff > 720) {
     diff = 1440 - diff;
@@ -112,8 +108,8 @@ void sincronizarHora() {
 
 // ===== SLOT TRACKING =====
 
-bool slotYaEjecutado(int id, int anio, int diaAnio, int minutoProgramado) {
-  for (int i = 0; i < 80; i++) {
+bool slotYaEjecutado(int id, int16_t anio, int16_t diaAnio, int16_t minutoProgramado) {
+  for (int i = 0; i < SLOTS_MAX; i++) {
     if (slotsEjecutados[i].id == id &&
         slotsEjecutados[i].anio == anio &&
         slotsEjecutados[i].diaAnio == diaAnio &&
@@ -124,8 +120,8 @@ bool slotYaEjecutado(int id, int anio, int diaAnio, int minutoProgramado) {
   return false;
 }
 
-void marcarSlotEjecutado(int id, int anio, int diaAnio, int minutoProgramado) {
-  for (int i = 0; i < 80; i++) {
+void marcarSlotEjecutado(int id, int16_t anio, int16_t diaAnio, int16_t minutoProgramado) {
+  for (int i = 0; i < SLOTS_MAX; i++) {
     if (slotsEjecutados[i].id == 0) {
       slotsEjecutados[i].id = id;
       slotsEjecutados[i].anio = anio;

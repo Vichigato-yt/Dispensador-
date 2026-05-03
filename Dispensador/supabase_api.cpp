@@ -1,4 +1,5 @@
 #include "supabase_api.h"
+#include <mbedtls/base64.h>
 
 // ===== HELPER FUNCTIONS =====
 
@@ -79,6 +80,58 @@ void diagnosticoConexionSupabase() {
 
 #if ENABLE_EMAIL_NOTIFICATIONS
 
+static String smtpBase64(const String& input) {
+  size_t needed = 0;
+  mbedtls_base64_encode(nullptr, 0, &needed,
+                        reinterpret_cast<const unsigned char*>(input.c_str()),
+                        input.length());
+  if (needed == 0) return "";
+
+  String out;
+  out.reserve(needed + 2);
+  unsigned char encoded[256];
+  if (needed > sizeof(encoded)) return "";
+
+  if (mbedtls_base64_encode(encoded, sizeof(encoded), &needed,
+                            reinterpret_cast<const unsigned char*>(input.c_str()),
+                            input.length()) != 0) {
+    return "";
+  }
+
+  for (size_t i = 0; i < needed; i++) out += static_cast<char>(encoded[i]);
+  return out;
+}
+
+static bool smtpExpect(WiFiClientSecure& client, int expectedCode) {
+  unsigned long start = millis();
+  while (!client.available() && millis() - start < 5000) delay(5);
+  if (!client.available()) return false;
+
+  int code = 0;
+  while (client.available()) {
+    String line = client.readStringUntil('\n');
+    line.trim();
+    if (line.length() >= 3 && isDigit(line[0]) && isDigit(line[1]) && isDigit(line[2])) {
+      code = line.substring(0, 3).toInt();
+      if (line.length() >= 4 && line[3] == ' ') break;
+    }
+  }
+
+  return code == expectedCode;
+}
+
+static bool smtpCommand(WiFiClientSecure& client, const String& cmd, int expectedCode) {
+  client.print(cmd);
+  client.print("\r\n");
+  return smtpExpect(client, expectedCode);
+}
+
+static String passwordSinEspacios() {
+  String pass = String(AUTHOR_PASSWORD);
+  pass.replace(" ", "");
+  return pass;
+}
+
 bool credencialesEmailConfiguradas() {
   String author = String(AUTHOR_EMAIL);
   String pass = String(AUTHOR_PASSWORD);
@@ -137,41 +190,22 @@ bool enviarCorreoNoConfirmado(
     if (!wifiOk()) return false;
   }
 
-  SMTPSession smtp;
-  smtp.debug(0);
-
-  ESP_Mail_Session session;
-  session.server.host_name = SMTP_HOST;
-  session.server.port = SMTP_PORT;
-  session.login.email = AUTHOR_EMAIL;
-  String smtpPassword = String(AUTHOR_PASSWORD);
-  smtpPassword.replace(" ", "");
-  session.login.password = smtpPassword.c_str();
-  session.login.user_domain = "";
-
-  SMTP_Message message;
-  message.sender.name = F("ESP32 Dispensador");
-  message.sender.email = AUTHOR_EMAIL;
-  message.subject = F("Atención - Medicamento no consumido");
-
-  bool added = false;
+  const char* recipients[2];
+  int recipientCount = 0;
   if (correoValido(correoPaciente)) {
-    message.addRecipient(F("Paciente"), correoPaciente);
-    added = true;
+    recipients[recipientCount++] = correoPaciente;
   }
   if (correoValido(correoCuidador)) {
     if (!correoValido(correoPaciente) || strcmp(correoPaciente, correoCuidador) != 0) {
-      message.addRecipient(F("Cuidador"), correoCuidador);
-      added = true;
+      recipients[recipientCount++] = correoCuidador;
     }
   }
 
-  if (!added) {
+  if (recipientCount == 0) {
     if (!correoValido(ALERT_RECIPIENT_EMAIL)) return false;
-    message.addRecipient(F("Cuidador"), ALERT_RECIPIENT_EMAIL);
+    recipients[recipientCount++] = ALERT_RECIPIENT_EMAIL;
   }
 
-  // Simplified email body
   String texto = F("Medicamento no confirmado en compartimento ");
   texto += String(comp + 1);
   if (medicamentoNombre && strlen(medicamentoNombre) > 0) {
@@ -179,18 +213,39 @@ bool enviarCorreoNoConfirmado(
     texto += medicamentoNombre;
   }
 
-  message.text.content = texto.c_str();
-  message.text.charSet = "utf-8";
-  message.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  message.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_high;
-  message.response.notify = esp_mail_smtp_notify_success |
-                            esp_mail_smtp_notify_failure |
-                            esp_mail_smtp_notify_delay;
+  WiFiClientSecure smtp;
+  smtp.setInsecure();
+  smtp.setTimeout(10);
+  if (!smtp.connect(SMTP_HOST, SMTP_PORT)) return false;
+  if (!smtpExpect(smtp, 220)) return false;
 
-  if (!smtp.connect(&session)) return false;
-  bool ok = MailClient.sendMail(&smtp, &message, true);
-  smtp.closeSession();
-  return ok;
+  if (!smtpCommand(smtp, "EHLO esp32.local", 250)) return false;
+  if (!smtpCommand(smtp, "AUTH LOGIN", 334)) return false;
+
+  String b64User = smtpBase64(String(AUTHOR_EMAIL));
+  String b64Pass = smtpBase64(passwordSinEspacios());
+  if (b64User.length() == 0 || b64Pass.length() == 0) return false;
+
+  if (!smtpCommand(smtp, b64User, 334)) return false;
+  if (!smtpCommand(smtp, b64Pass, 235)) return false;
+  if (!smtpCommand(smtp, "MAIL FROM:<" + String(AUTHOR_EMAIL) + ">", 250)) return false;
+
+  for (int i = 0; i < recipientCount; i++) {
+    if (!smtpCommand(smtp, "RCPT TO:<" + String(recipients[i]) + ">", 250)) return false;
+  }
+
+  if (!smtpCommand(smtp, "DATA", 354)) return false;
+  smtp.print(F("From: ESP32 Dispensador <"));
+  smtp.print(AUTHOR_EMAIL);
+  smtp.print(F(">\r\nSubject: Atencion - Medicamento no consumido\r\n"));
+  smtp.print(F("Content-Type: text/plain; charset=utf-8\r\n\r\n"));
+  smtp.print(texto);
+  smtp.print(F("\r\n.\r\n"));
+  if (!smtpExpect(smtp, 250)) return false;
+
+  smtpCommand(smtp, "QUIT", 221);
+  smtp.stop();
+  return true;
 }
 
 #endif
@@ -258,16 +313,16 @@ bool registrarDispenso(
 ) {
   if (!wifiOk()) return false;
 
-  String fecha;
-  String hora;
-  int anio = 0;
-  int diaAnio = 0;
-  int minutoActual = 0;
+  char fecha[11] = {0};
+  char hora[9] = {0};
+  int16_t anio = 0;
+  int16_t diaAnio = 0;
+  int16_t minutoActual = 0;
   bool tiempoOk = obtenerFechaHoraLocal(fecha, hora, &anio, &diaAnio, &minutoActual);
 
   if (!tiempoOk) {
-    fecha = "1970-01-01";
-    hora = "00:00:00";
+    strncpy(fecha, "1970-01-01", sizeof(fecha) - 1);
+    strncpy(hora, "00:00:00", sizeof(hora) - 1);
   }
 
   StaticJsonDocument<256> doc;
@@ -346,14 +401,14 @@ bool procesarProgramacion() {
 
     if (!horaEnVentana(horaDispenso)) continue;
 
-    String fecha;
-    String hora;
-    int anio = 0;
-    int diaAnio = 0;
-    int minutoActual = 0;
+    char fecha[11] = {0};
+    char hora[9] = {0};
+    int16_t anio = 0;
+    int16_t diaAnio = 0;
+    int16_t minutoActual = 0;
     if (!obtenerFechaHoraLocal(fecha, hora, &anio, &diaAnio, &minutoActual)) continue;
 
-    int minutoProgramado = 0;
+    int16_t minutoProgramado = 0;
     if (!parseHoraProgramada(horaDispenso, minutoProgramado)) continue;
 
     if (slotYaEjecutado(id, anio, diaAnio, minutoProgramado)) continue;
@@ -363,7 +418,7 @@ bool procesarProgramacion() {
     compartimento--;
 
     bool found = false;
-    for (int i = 0; i < recientesCount; i++) {
+    for (uint8_t i = 0; i < recientesCount; i++) {
       if (recientes[i].id == id && millis() - recientes[i].ts < DUPLICATE_WINDOW_MS) {
         found = true;
         break;
@@ -373,14 +428,14 @@ bool procesarProgramacion() {
 
     if (millis() - lastDispenseAt[compartimento] < DISPENSE_COOLDOWN_MS) continue;
 
-    setLcdState(LCD_MODE_DISPENSO, compartimento, cantidad, medicamentoNombre);
+    setLcdState(LCD_MODE_DISPENSO, static_cast<int8_t>(compartimento), static_cast<uint8_t>(cantidad), medicamentoNombre);
     updateLCD();
     ejecutarDispensado(compartimento, cantidad);
     lastDispenseAt[compartimento] = millis();
 
     marcarSlotEjecutado(id, anio, diaAnio, minutoProgramado);
 
-    setLcdState(LCD_MODE_CONFIRM, compartimento, cantidad, medicamentoNombre);
+    setLcdState(LCD_MODE_CONFIRM, static_cast<int8_t>(compartimento), static_cast<uint8_t>(cantidad), medicamentoNombre);
     updateLCD();
     bool confirmado = esperarConfirmacionUsuario(CONFIRM_TIMEOUT_MS);
     setLcdState(LCD_MODE_IDLE, -1, 0, "");
@@ -428,7 +483,7 @@ bool procesarProgramacion() {
 #endif
     }
 
-    if (recientesCount < 20) {
+    if (recientesCount < RECIENTES_MAX) {
       recientes[recientesCount].id = id;
       recientes[recientesCount].ts = millis();
       recientesCount++;

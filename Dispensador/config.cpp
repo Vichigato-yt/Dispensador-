@@ -25,8 +25,8 @@ const uint8_t SERVO_CHANNELS[TOTAL_SERVOS] = {
   5, 4, 3
 };
 
-int servo_pos[TOTAL_SERVOS];
-int servo_target[TOTAL_SERVOS];
+int16_t servo_pos[TOTAL_SERVOS];
+int16_t servo_target[TOTAL_SERVOS];
 unsigned long lastServoUpdate = 0;
 
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA_ADDR);
@@ -41,12 +41,12 @@ unsigned long lastDispenseAt[NUM_COMPARTIMENTOS] = {0, 0, 0};
 unsigned long lastWifiRetry = 0;
 
 LcdMode lcdMode = LCD_MODE_IDLE;
-int lcdCompartimento = -1;
-int lcdCantidad = 0;
+int8_t lcdCompartimento = -1;
+uint8_t lcdCantidad = 0;
 char lcdMedicamento[LCD_MEDICAMENTO_MAX + 1] = {0};
 
-RegistroReciente recientes[20];
-int recientesCount = 0;
+RegistroReciente recientes[RECIENTES_MAX];
+uint8_t recientesCount = 0;
 
-EjecucionSlot slotsEjecutados[80];
-int slotsEjecutadosCount = 0;
+EjecucionSlot slotsEjecutados[SLOTS_MAX];
+uint8_t slotsEjecutadosCount = 0;

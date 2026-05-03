@@ -2,7 +2,7 @@
 #include "time_utils.h"
 #include "wifi_utils.h"
 
-void setLcdState(LcdMode mode, int compartimento, int cantidad, const char* medicamento) {
+void setLcdState(LcdMode mode, int8_t compartimento, uint8_t cantidad, const char* medicamento) {
   lcdMode = mode;
   lcdCompartimento = compartimento;
   lcdCantidad = cantidad;
@@ -19,7 +19,8 @@ void updateLCD() {
   if (now - lastLCDUpdate < LCD_UPDATE_MS) return;
   lastLCDUpdate = now;
 
-  String fecha, hora;
+  char fecha[11] = {0};
+  char hora[9] = {0};
   bool ok = obtenerFechaHoraLocal(fecha, hora, nullptr, nullptr, nullptr);
 
   lcd.clear();
@@ -74,10 +75,12 @@ void updateLCD() {
   lcd.print("Listo para dispensar");
   lcd.setCursor(0, 2);
   lcd.print("Hora: ");
-  if (hora.length() >= 5) {
-    lcd.print(hora.substring(0, 5));
+  if (hora[0] != '\0') {
+    char hhmm[6] = {0};
+    strncpy(hhmm, hora, 5);
+    lcd.print(hhmm);
   } else {
-    lcd.print(hora);
+    lcd.print("--:--");
   }
   lcd.setCursor(0, 3);
   if (wifiOk()) {

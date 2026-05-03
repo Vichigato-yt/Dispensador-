@@ -12,7 +12,6 @@
 
 #define ENABLE_EMAIL_NOTIFICATIONS 1
 #if ENABLE_EMAIL_NOTIFICATIONS
-#include <ESP_Mail_Client.h>
 #define SMTP_HOST "smtp.gmail.com"
 #define SMTP_PORT 465
 #define AUTHOR_EMAIL "pillhouruets@gmail.com"
@@ -73,8 +72,8 @@ constexpr unsigned long BUTTON_DEBOUNCE_MS = 40;
 constexpr int SERVO_SMOOTH_INTERVAL = 20;
 constexpr int SERVO_SMOOTH_SPEED = 4;
 
-extern int servo_pos[TOTAL_SERVOS];
-extern int servo_target[TOTAL_SERVOS];
+extern int16_t servo_pos[TOTAL_SERVOS];
+extern int16_t servo_target[TOTAL_SERVOS];
 extern unsigned long lastServoUpdate;
 
 // PCA9685 (Adafruit) configuration
@@ -104,17 +103,20 @@ enum LcdMode {
 };
 
 extern LcdMode lcdMode;
-extern int lcdCompartimento;
-extern int lcdCantidad;
+extern int8_t lcdCompartimento;
+extern uint8_t lcdCantidad;
 extern char lcdMedicamento[LCD_MEDICAMENTO_MAX + 1];
+
+constexpr uint8_t RECIENTES_MAX = 20;
+constexpr uint8_t SLOTS_MAX = 80;
 
 struct RegistroReciente {
   int id;
   unsigned long ts;
 };
 
-extern RegistroReciente recientes[20];
-extern int recientesCount;
+extern RegistroReciente recientes[RECIENTES_MAX];
+extern uint8_t recientesCount;
 
 struct EjecucionSlot {
   int id;
@@ -123,5 +125,5 @@ struct EjecucionSlot {
   int minutoProgramado;
 };
 
-extern EjecucionSlot slotsEjecutados[80];
-extern int slotsEjecutadosCount;
+extern EjecucionSlot slotsEjecutados[SLOTS_MAX];
+extern uint8_t slotsEjecutadosCount;
