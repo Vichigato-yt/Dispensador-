@@ -40,6 +40,17 @@ bool esperarConfirmacionUsuario(unsigned long timeoutMs) {
       lastBeepChange = now;
     }
 
+    // Confirmación por Serial (enviar 'S' o 's')
+    if (Serial.available()) {
+      char c = (char)Serial.read();
+      while (Serial.available()) Serial.read();  // descartar resto del buffer para evitar comandos obsoletos
+      if (c == 'S' || c == 's') {
+        Serial.println(F("[CONFIRM] Confirmado via Serial (S)"));
+        buzzerOff();
+        return true;
+      }
+    }
+
     bool raw = digitalRead(CONFIRM_BUTTON_PIN);
     if (raw != lastRaw) {
       lastRaw    = raw;
