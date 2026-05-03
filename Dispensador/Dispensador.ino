@@ -34,6 +34,45 @@ void diagnosticoI2CLcd() {
   }
 }
 
+// Lectura del Serial: '1'/'2'/'3' → prueba ciclo de dispensado del compartimento
+void manejarSerialTest() {
+  if (!Serial.available()) return;
+  char c = (char)Serial.read();
+  while (Serial.available()) Serial.read();  // descartar resto de la línea
+
+  if (c < '1' || c > '3') return;
+
+  uint8_t comp = (uint8_t)(c - '1');  // 0-based
+  Serial.print(F("[SERIAL] Prueba dispensado compartimento "));
+  Serial.println(comp + 1);
+
+  setLcdState(LCD_MODE_DISPENSO, (int8_t)comp, 1, "PRUEBA");
+  updateLCD();
+  ejecutarDispensado(comp, 1);
+  lastDispenseAt[comp] = millis();
+
+  // Espera confirmación: botón físico o señal 'S' por Serial
+  setLcdState(LCD_MODE_CONFIRM, (int8_t)comp, 1, "PRUEBA");
+  updateLCD();
+  bool ok = esperarConfirmacionUsuario(CONFIRM_TIMEOUT_MS);
+
+  Serial.print(F("[SERIAL] Prueba comp "));
+  Serial.print(comp + 1);
+  Serial.print(F(": "));
+  Serial.println(ok ? F("CONFIRMADO") : F("TIMEOUT"));
+
+  if (!ok) {
+#if ENABLE_EMAIL_NOTIFICATIONS
+    enviarCorreoNoConfirmado(
+      /*id*/0, comp, /*medicamentoId*/0, "PRUEBA SERIAL",
+      /*usuarioNombre*/"", /*correoPaciente*/"", /*correoCuidador*/"");
+#endif
+  }
+
+  setLcdState(LCD_MODE_IDLE, -1, 0, "");
+  updateLCD();
+}
+
 // Pulsación larga (>1.5 s) dispara prueba manual de dispensado
 void manejarPruebaManualBoton() {
   bool raw = digitalRead(CONFIRM_BUTTON_PIN);
@@ -124,6 +163,7 @@ void loop() {
   }
 
   updateLCD();
+  manejarSerialTest();
   manejarPruebaManualBoton();
 
   if (wifiOk() && (now - lastEstadoPing > ESTADO_INTERVAL_MS)) {
