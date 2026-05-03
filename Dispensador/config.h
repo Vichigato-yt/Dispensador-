@@ -46,7 +46,7 @@ extern const char* TZ_INFO;
 //   [base+0] → abre/cierra tapa
 //   [base+1] → empuja pastilla
 //   [base+2] → retorna empujador
-// Compartimento 0: canales PCA 12, 14, 15
+// Compartimento 0: canales PCA 12, 15, 14
 // Compartimento 1: canales PCA 11,  9,  7
 // Compartimento 2: canales PCA  5,  4,  3
 constexpr uint8_t NUM_COMPARTIMENTOS       = 3;

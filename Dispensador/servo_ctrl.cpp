@@ -34,18 +34,19 @@ bool moverServoHasta(uint8_t servoIdx, uint8_t target, unsigned long timeoutMs) 
 }
 
 // Ciclo completo de un servo: abre → espera → cierra → espera
-void cicloServoDispenso(uint8_t servoIdx) {
-  moverServoHasta(servoIdx, SERVO_OPEN_ANGLE,   4000UL);
+// openAngle/closedAngle permiten invertir la dirección según el lado del servo.
+void cicloServoDispenso(uint8_t servoIdx, uint8_t openAngle, uint8_t closedAngle) {
+  moverServoHasta(servoIdx, openAngle,   4000UL);
   delay(450);
-  moverServoHasta(servoIdx, SERVO_CLOSED_ANGLE, 4000UL);
+  moverServoHasta(servoIdx, closedAngle, 4000UL);
   delay(350);
 }
 
 // Dispensa 'cantidad' pastillas del compartimento indicado (0-based).
 // Secuencia por repetición:
-//   1. [base+0] abre tapa
-//   2. [base+1] empuja pastilla
-//   3. [base+2] retorna empujador
+//   1. [base+0] abre tapa          (lado derecho → 0° abre, 90° cierra)
+//   2. [base+1] empuja pastilla    (lado izquierdo → invertido: 90° abre, 0° cierra)
+//   3. [base+2] retorna empujador  (mismo lado que base+0 → 0° abre, 90° cierra)
 void ejecutarDispensado(uint8_t compartimento, uint8_t cantidad) {
   if (compartimento >= NUM_COMPARTIMENTOS) return;
 
@@ -62,8 +63,8 @@ void ejecutarDispensado(uint8_t compartimento, uint8_t cantidad) {
   Serial.println(SERVO_CHANNELS[base+2]);
 
   for (uint8_t i = 0; i < cantidad; i++) {
-    cicloServoDispenso(base);      // tapa
-    cicloServoDispenso(base + 1);  // empujador
-    cicloServoDispenso(base + 2);  // retorno
+    cicloServoDispenso(base,     SERVO_OPEN_ANGLE,   SERVO_CLOSED_ANGLE);  // tapa (derecho)
+    cicloServoDispenso(base + 1, SERVO_CLOSED_ANGLE, SERVO_OPEN_ANGLE);    // empujador (izquierdo, invertido)
+    cicloServoDispenso(base + 2, SERVO_OPEN_ANGLE,   SERVO_CLOSED_ANGLE);  // retorno (derecho)
   }
 }
