@@ -3,11 +3,22 @@
 #include "wifi_utils.h"
 
 void buzzerOn() {
-  digitalWrite(BUZZER_PIN, HIGH);
+  tone(BUZZER_PIN, 2400);
 }
 
 void buzzerOff() {
+  noTone(BUZZER_PIN);
   digitalWrite(BUZZER_PIN, LOW);
+}
+
+void pruebaBuzzerInicio() {
+  for (int i = 0; i < 2; i++) {
+    buzzerOn();
+    delay(90);
+    buzzerOff();
+    delay(110);
+  }
+  Serial.println("[BUZZER] Prueba de inicio completada");
 }
 
 bool esperarConfirmacionUsuario(unsigned long timeoutMs) {

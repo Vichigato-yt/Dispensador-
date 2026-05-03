@@ -31,6 +31,7 @@ void setup() {
   buzzerOff();
   Serial.print("[INIT] Buzzer GPIO ");
   Serial.println(BUZZER_PIN);
+  pruebaBuzzerInicio();
 
   // Initialize I2C bus for PCA9685 and LCD
   Serial.println("[INIT] Inicializando 9 servos...");

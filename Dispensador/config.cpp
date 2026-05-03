@@ -13,6 +13,8 @@ const char* SUPABASE_ANON_KEY = "sb_publishable_2kI2ZxbsRILh-jnptALpxQ_aVV-3tM0"
 
 const char* ENDPOINT_PROGRAMACION =
   "/rest/v1/programacion?select=*,usuario:usuarios(correo,email,usuario,nombre,rol)&estado=eq.activo&order=hora_dispenso.asc&limit=50";
+const char* ENDPOINT_PROGRAMACION_FALLBACK =
+  "/rest/v1/programacion?select=*&estado=eq.activo&order=hora_dispenso.asc&limit=50";
 const char* ENDPOINT_REGISTRO = "/rest/v1/historial_dispenso";
 const char* ENDPOINT_ESTADO = "/rest/v1/configuracion_dispositivo?id=eq.1";
 

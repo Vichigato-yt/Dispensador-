@@ -30,6 +30,7 @@ extern const char* SUPABASE_ANON_KEY;
 
 // ======= ENDPOINTS =======
 extern const char* ENDPOINT_PROGRAMACION;
+extern const char* ENDPOINT_PROGRAMACION_FALLBACK;
 extern const char* ENDPOINT_REGISTRO;
 extern const char* ENDPOINT_ESTADO;
 

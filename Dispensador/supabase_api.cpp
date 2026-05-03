@@ -260,6 +260,11 @@ int requestSupabase(
 ) {
   int code = -1;
 
+  Serial.print("[SUPABASE] ");
+  Serial.print(method);
+  Serial.print(" ");
+  Serial.println(endpoint);
+
   for (int intento = 1; intento <= HTTP_RETRIES; intento++) {
     if (!wifiOk()) {
       conectarWiFi();
@@ -275,6 +280,7 @@ int requestSupabase(
 
     if (!beginOk) {
       code = -1;
+      Serial.println("[SUPABASE] http.begin fallo");
       delay(250);
       continue;
     }
@@ -290,8 +296,15 @@ int requestSupabase(
       code = http.sendRequest(method, requestBody ? *requestBody : "");
     }
 
+    Serial.print("[SUPABASE] intento ");
+    Serial.print(intento);
+    Serial.print(" -> HTTP ");
+    Serial.println(code);
+
     if (code > 0 && responseBody != nullptr) {
       *responseBody = http.getString();
+      Serial.print("[SUPABASE] bytes recibidos: ");
+      Serial.println(responseBody->length());
     }
 
     http.end();
@@ -377,16 +390,60 @@ void enviarEstado() {
 bool procesarProgramacion() {
   if (!wifiOk()) return false;
 
+  Serial.println("[SCHED] Consultando programacion...");
   String payload;
   int code = requestSupabase(ENDPOINT_PROGRAMACION, "GET", nullptr, &payload);
 
+  if (code == 300) {
+    Serial.println("[SCHED] HTTP 300: consulta ambigua en endpoint principal");
+    if (payload.length() > 0) {
+      Serial.print("[SCHED] Detalle 300: ");
+      Serial.println(payload);
+    }
+
+    String fallbackPayload;
+    int fallbackCode = requestSupabase(ENDPOINT_PROGRAMACION_FALLBACK, "GET", nullptr, &fallbackPayload);
+    Serial.print("[SCHED] Fallback HTTP: ");
+    Serial.println(fallbackCode);
+    if (fallbackCode == 200) {
+      payload = fallbackPayload;
+      code = 200;
+      Serial.println("[SCHED] Fallback OK, se usa programacion sin join usuario");
+    }
+  }
+
   if (code != 200) {
+    Serial.print("[SCHED] Error HTTP al leer programacion: ");
+    Serial.println(code);
+    if (payload.length() > 0) {
+      Serial.print("[SCHED] Payload error: ");
+      Serial.println(payload);
+    }
     return false;
   }
 
   StaticJsonDocument<3072> doc;
-  if (deserializeJson(doc, payload)) return false;
+  DeserializationError jsonError = deserializeJson(doc, payload);
+  if (jsonError) {
+    Serial.print("[SCHED] JSON invalido: ");
+    Serial.println(jsonError.c_str());
+    return false;
+  }
   JsonArray arr = doc.as<JsonArray>();
+
+  char ahoraFecha[11] = {0};
+  char ahoraHora[9] = {0};
+  obtenerFechaHoraLocal(ahoraFecha, ahoraHora, nullptr, nullptr, nullptr);
+  Serial.print("[SCHED] Registros recibidos: ");
+  Serial.print(arr.size());
+  Serial.print(" | Hora local: ");
+  Serial.print(ahoraFecha);
+  Serial.print(" ");
+  Serial.println(ahoraHora);
+
+  uint16_t activos = 0;
+  uint16_t enVentana = 0;
+  uint16_t ejecutados = 0;
 
   for (JsonObject item : arr) {
     int id = fieldInt(item, "id_programacion", "id", 0);
@@ -398,8 +455,10 @@ bool procesarProgramacion() {
     const char* horaDispenso = fieldStr(item, "hora_dispenso", "hora", "");
 
     if (strcmp(estado, "inactivo") == 0) continue;
+    activos++;
 
     if (!horaEnVentana(horaDispenso)) continue;
+    enVentana++;
 
     char fecha[11] = {0};
     char hora[9] = {0};
@@ -427,6 +486,15 @@ bool procesarProgramacion() {
     if (found) continue;
 
     if (millis() - lastDispenseAt[compartimento] < DISPENSE_COOLDOWN_MS) continue;
+
+    Serial.print("[SCHED] Ejecutando id=");
+    Serial.print(id);
+    Serial.print(" comp=");
+    Serial.print(compartimento + 1);
+    Serial.print(" cantidad=");
+    Serial.print(cantidad);
+    Serial.print(" horaProg=");
+    Serial.println(horaDispenso);
 
     setLcdState(LCD_MODE_DISPENSO, static_cast<int8_t>(compartimento), static_cast<uint8_t>(cantidad), medicamentoNombre);
     updateLCD();
@@ -488,7 +556,16 @@ bool procesarProgramacion() {
       recientes[recientesCount].ts = millis();
       recientesCount++;
     }
+
+    ejecutados++;
   }
+
+  Serial.print("[SCHED] Resumen -> activos: ");
+  Serial.print(activos);
+  Serial.print(", enVentana: ");
+  Serial.print(enVentana);
+  Serial.print(", ejecutados: ");
+  Serial.println(ejecutados);
 
   return true;
 }

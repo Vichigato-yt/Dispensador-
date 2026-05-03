@@ -4,4 +4,5 @@
 
 void buzzerOn();
 void buzzerOff();
+void pruebaBuzzerInicio();
 bool esperarConfirmacionUsuario(unsigned long timeoutMs);
