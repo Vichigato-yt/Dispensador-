@@ -202,8 +202,13 @@ bool enviarCorreoNoConfirmado(
   }
 
   if (recipientCount == 0) {
-    if (!correoValido(ALERT_RECIPIENT_EMAIL)) return false;
-    recipients[recipientCount++] = ALERT_RECIPIENT_EMAIL;
+    if (correoValido(ALERT_RECIPIENT_EMAIL)) {
+      recipients[recipientCount++] = ALERT_RECIPIENT_EMAIL;
+    } else if (correoValido(AUTHOR_EMAIL)) {
+      recipients[recipientCount++] = AUTHOR_EMAIL;
+    } else {
+      return false;
+    }
   }
 
   String texto = F("Medicamento no confirmado en compartimento ");

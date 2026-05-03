@@ -31,8 +31,13 @@ bool esperarConfirmacionUsuario(unsigned long timeoutMs) {
   bool buzzerActivo = true;
 
   unsigned long start = millis();
-  bool lastRaw = digitalRead(CONFIRM_BUTTON_PIN);
+  bool botonActual = digitalRead(CONFIRM_BUTTON_PIN);
+  bool lastRaw = !botonActual;
   unsigned long lastChange = millis();
+  unsigned long lastDiag = millis();
+  Serial.print("[CONFIRM] Estado inicial boton: ");
+  Serial.println(botonActual ? "ALTO" : "BAJO");
+  Serial.println("[CONFIRM] Presiona y suelta el boton ahora...");
 
   while (millis() - start < timeoutMs) {
     unsigned long now = millis();
@@ -53,6 +58,17 @@ bool esperarConfirmacionUsuario(unsigned long timeoutMs) {
     if (raw != lastRaw) {
       lastRaw = raw;
       lastChange = millis();
+      Serial.print("[CONFIRM] Cambio boton -> ");
+      Serial.println(raw ? "ALTO" : "BAJO");
+    }
+
+    if (now - lastDiag > 500) {
+      Serial.print("[CONFIRM] Estado actual: ");
+      Serial.print(raw ? "ALTO" : "BAJO");
+      Serial.print(" | Tiempo restante: ");
+      Serial.print((timeoutMs - (now - start)) / 1000);
+      Serial.println("s");
+      lastDiag = now;
     }
 
     if ((millis() - lastChange) >= BUTTON_DEBOUNCE_MS && raw == LOW) {

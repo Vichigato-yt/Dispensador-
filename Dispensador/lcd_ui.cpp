@@ -2,6 +2,15 @@
 #include "time_utils.h"
 #include "wifi_utils.h"
 
+namespace {
+void writeLine20(uint8_t row, const char* text) {
+  char padded[21] = {0};
+  snprintf(padded, sizeof(padded), "%-20.20s", text ? text : "");
+  lcd.setCursor(0, row);
+  lcd.print(padded);
+}
+}
+
 void setLcdState(LcdMode mode, int8_t compartimento, uint8_t cantidad, const char* medicamento) {
   lcdMode = mode;
   lcdCompartimento = compartimento;
@@ -15,78 +24,64 @@ void setLcdState(LcdMode mode, int8_t compartimento, uint8_t cantidad, const cha
 }
 
 void updateLCD() {
+  static char lastLines[4][21] = {{0}};
+
   unsigned long now = millis();
   if (now - lastLCDUpdate < LCD_UPDATE_MS) return;
   lastLCDUpdate = now;
+
+  lcd.backlight();
 
   char fecha[11] = {0};
   char hora[9] = {0};
   bool ok = obtenerFechaHoraLocal(fecha, hora, nullptr, nullptr, nullptr);
 
-  lcd.clear();
+  char lines[4][21] = {{0}};
+
   if (!ok) {
-    lcd.setCursor(0, 0);
-    lcd.print("Hora no sincronizada");
-    lcd.setCursor(0, 1);
-    lcd.print("Esperando NTP...");
-    return;
-  }
-
-  if (lcdMode == LCD_MODE_DISPENSO) {
-    lcd.setCursor(0, 0);
-    lcd.print("Dispensando...");
-    lcd.setCursor(0, 1);
-    lcd.print("Comp: ");
-    lcd.print(lcdCompartimento + 1);
-    lcd.setCursor(0, 2);
-    lcd.print("Cant: ");
-    lcd.print(lcdCantidad);
-    lcd.setCursor(0, 3);
+    snprintf(lines[0], sizeof(lines[0]), "%s", "Hora no sincronizada");
+    snprintf(lines[1], sizeof(lines[1]), "%s", "Esperando NTP...");
+  } else if (lcdMode == LCD_MODE_DISPENSO) {
+    snprintf(lines[0], sizeof(lines[0]), "%s", "Dispensando...");
+    snprintf(lines[1], sizeof(lines[1]), "Comp: %d", lcdCompartimento + 1);
+    snprintf(lines[2], sizeof(lines[2]), "Cant: %u", lcdCantidad);
     if (wifiOk()) {
-      lcd.print("WiFi: ");
-      lcd.print(WiFi.SSID());
+      snprintf(lines[3], sizeof(lines[3]), "WiFi: %.14s", WiFi.SSID().c_str());
     } else {
-      lcd.print("WiFi: desconectado");
+      snprintf(lines[3], sizeof(lines[3]), "%s", "WiFi: desconectado");
     }
-    return;
-  }
-
-  if (lcdMode == LCD_MODE_CONFIRM) {
-    lcd.setCursor(0, 0);
-    lcd.print("Tomar pastilla");
-    lcd.setCursor(0, 1);
-    lcd.print("Comp: ");
-    lcd.print(lcdCompartimento + 1);
-    lcd.setCursor(0, 2);
+  } else if (lcdMode == LCD_MODE_CONFIRM) {
+    snprintf(lines[0], sizeof(lines[0]), "%s", "Tomar pastilla");
+    snprintf(lines[1], sizeof(lines[1]), "Comp: %d", lcdCompartimento + 1);
     if (strlen(lcdMedicamento) > 0) {
-      lcd.print("Med: ");
-      lcd.print(lcdMedicamento);
+      snprintf(lines[2], sizeof(lines[2]), "Med: %.15s", lcdMedicamento);
     } else {
-      lcd.print("Recoja medicamento");
+      snprintf(lines[2], sizeof(lines[2]), "%s", "Recoja medicamento");
     }
-    lcd.setCursor(0, 3);
-    lcd.print("Presione boton");
-    return;
+    snprintf(lines[3], sizeof(lines[3]), "%s", "Presione boton");
+  } else {
+    char hhmm[6] = "--:--";
+    if (hora[0] != '\0') {
+      strncpy(hhmm, hora, 5);
+      hhmm[5] = '\0';
+    }
+
+    snprintf(lines[0], sizeof(lines[0]), "%.20s", saludoPorHora());
+    snprintf(lines[1], sizeof(lines[1]), "%s", "Listo para dispensar");
+    snprintf(lines[2], sizeof(lines[2]), "Hora: %s", hhmm);
+
+    if (wifiOk()) {
+      snprintf(lines[3], sizeof(lines[3]), "WiFi: %.14s", WiFi.SSID().c_str());
+    } else {
+      snprintf(lines[3], sizeof(lines[3]), "%s", "WiFi: desconectado");
+    }
   }
 
-  lcd.setCursor(0, 0);
-  lcd.print(saludoPorHora());
-  lcd.setCursor(0, 1);
-  lcd.print("Listo para dispensar");
-  lcd.setCursor(0, 2);
-  lcd.print("Hora: ");
-  if (hora[0] != '\0') {
-    char hhmm[6] = {0};
-    strncpy(hhmm, hora, 5);
-    lcd.print(hhmm);
-  } else {
-    lcd.print("--:--");
-  }
-  lcd.setCursor(0, 3);
-  if (wifiOk()) {
-    lcd.print("WiFi: ");
-    lcd.print(WiFi.SSID());
-  } else {
-    lcd.print("WiFi: desconectado");
+  for (uint8_t row = 0; row < 4; row++) {
+    if (strncmp(lastLines[row], lines[row], 20) != 0) {
+      writeLine20(row, lines[row]);
+      strncpy(lastLines[row], lines[row], 20);
+      lastLines[row][20] = '\0';
+    }
   }
 }

@@ -12,6 +12,72 @@
 #include "servo_ctrl.h"
 #include "supabase_api.h"
 
+namespace {
+bool botonManualPrev = HIGH;
+unsigned long botonManualDownAt = 0;
+bool botonManualDisparado = false;
+
+void diagnosticoI2CLcd() {
+  Serial.println("[I2C] Escaneando bus...");
+  bool found = false;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t err = Wire.endTransmission();
+    if (err == 0) {
+      found = true;
+      Serial.print("[I2C] Dispositivo en 0x");
+      if (addr < 16) Serial.print('0');
+      Serial.println(addr, HEX);
+    }
+  }
+
+  Wire.beginTransmission(LCD_ADDR);
+  uint8_t lcdErr = Wire.endTransmission();
+  if (lcdErr == 0) {
+    Serial.print("[LCD] Detectado en 0x");
+    if (LCD_ADDR < 16) Serial.print('0');
+    Serial.println(LCD_ADDR, HEX);
+  } else {
+    Serial.print("[LCD] No responde en 0x");
+    if (LCD_ADDR < 16) Serial.print('0');
+    Serial.println(LCD_ADDR, HEX);
+    if (!found) {
+      Serial.println("[LCD] No se detectaron dispositivos I2C. Revisar cableado SDA/SCL y VCC/GND");
+    }
+  }
+}
+
+void manejarPruebaManualBoton() {
+  bool raw = digitalRead(CONFIRM_BUTTON_PIN);
+
+  if (raw != botonManualPrev) {
+    botonManualPrev = raw;
+    if (raw == LOW) {
+      botonManualDownAt = millis();
+      botonManualDisparado = false;
+      Serial.println("[BTN] Boton presionado");
+    } else {
+      Serial.println("[BTN] Boton liberado");
+    }
+  }
+
+  if (raw == LOW && !botonManualDisparado && (millis() - botonManualDownAt) > 1500) {
+    botonManualDisparado = true;
+    Serial.println("[BTN] Pulsacion larga detectada -> prueba manual");
+
+    setLcdState(LCD_MODE_CONFIRM, 0, 1, "PRUEBA");
+    updateLCD();
+
+    bool ok = esperarConfirmacionUsuario(15000);
+    Serial.print("[BTN] Resultado prueba manual: ");
+    Serial.println(ok ? "CONFIRMADO" : "TIMEOUT");
+
+    setLcdState(LCD_MODE_IDLE, -1, 0, "");
+    updateLCD();
+  }
+}
+}  // namespace
+
 // ===== SETUP =====
 void setup() {
   Serial.begin(115200);
@@ -36,6 +102,8 @@ void setup() {
   // Initialize I2C bus for PCA9685 and LCD
   Serial.println("[INIT] Inicializando 9 servos...");
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(100000);
+  diagnosticoI2CLcd();
   pca.begin();
   pca.setPWMFreq(SERVO_FREQ);
 
@@ -50,7 +118,11 @@ void setup() {
   // Initialize LCD
   Serial.println("[INIT] Inicializando LCD I2C 20x4...");
   lcd.init();
+  delay(200);
+  lcd.display();
+  delay(100);
   lcd.backlight();
+  delay(100);
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Inicializando...");
@@ -84,6 +156,9 @@ void loop() {
 
   // Update LCD display (every ~1 second)
   updateLCD();
+
+  // Manual hardware test (long-press button >1.5s)
+  manejarPruebaManualBoton();
 
   // Send device status ping (every ~5 minutes)
   if (wifiOk() && (now - lastEstadoPing > ESTADO_INTERVAL_MS)) {
