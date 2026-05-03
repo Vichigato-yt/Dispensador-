@@ -7,24 +7,23 @@ bool wifiOk() {
 void conectarWiFi() {
   if (wifiOk()) return;
 
-  Serial.print("[WIFI] Conectando...");
+  Serial.print(F("[WIFI] Conectando..."));
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  int intentos = 0;
+  uint8_t intentos = 0;
   while (!wifiOk() && intentos < 20) {
     delay(500);
-    Serial.print(".");
+    Serial.print('.');
     intentos++;
   }
 
   if (wifiOk()) {
-    Serial.println(" OK");
-    Serial.print("[WIFI] IP: ");
+    Serial.print(F(" OK | IP: "));
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println(" FALLO");
+    Serial.println(F(" FALLO"));
   }
 }

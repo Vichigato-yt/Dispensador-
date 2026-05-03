@@ -1,9 +1,8 @@
 #pragma once
-
 #include "config.h"
 
-void setPCA(int servoIdx, int angle);
+void setPCA(uint8_t servoIdx, uint8_t angle);
 void updateServoSmooth();
-bool moverServoHasta(int servoIdx, int target, unsigned long timeoutMs);
-void cicloServoDispenso(int servoIdx);
-void ejecutarDispensado(int compartimento, int cantidad);
+bool moverServoHasta(uint8_t servoIdx, uint8_t target, unsigned long timeoutMs);
+void cicloServoDispenso(uint8_t servoIdx);
+void ejecutarDispensado(uint8_t compartimento, uint8_t cantidad);

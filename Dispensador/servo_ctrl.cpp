@@ -1,9 +1,9 @@
 #include "servo_ctrl.h"
 
-void setPCA(int servoIdx, int angle) {
-  if (servoIdx < 0 || servoIdx >= TOTAL_SERVOS) return;
-  int duty = map(angle, 0, 180, PCA_POS0, PCA_POS180);
-  uint8_t channel = SERVO_CHANNELS[servoIdx];
+void setPCA(uint8_t servoIdx, uint8_t angle) {
+  if (servoIdx >= TOTAL_SERVOS) return;
+  uint16_t duty    = (uint16_t)map(angle, 0, 180, PCA_POS0, PCA_POS180);
+  uint8_t  channel = SERVO_CHANNELS[servoIdx];
   pca.setPWM(channel, 0, duty);
 }
 
@@ -12,47 +12,58 @@ void updateServoSmooth() {
   if (now - lastServoUpdate < SERVO_SMOOTH_INTERVAL) return;
   lastServoUpdate = now;
 
-  for (int i = 0; i < TOTAL_SERVOS; i++) {
-    if (servo_pos[i] < servo_target[i]) {
-      servo_pos[i] = min(servo_pos[i] + SERVO_SMOOTH_SPEED, servo_target[i]);
-    } else if (servo_pos[i] > servo_target[i]) {
-      servo_pos[i] = max(servo_pos[i] - SERVO_SMOOTH_SPEED, servo_target[i]);
-    }
-    setPCA(i, servo_pos[i]);
+  for (uint8_t i = 0; i < TOTAL_SERVOS; i++) {
+    int16_t pos    = servo_pos[i];
+    int16_t target = servo_target[i];
+    if      (pos < target) pos = (int16_t)min((int)pos + SERVO_SMOOTH_SPEED, (int)target);
+    else if (pos > target) pos = (int16_t)max((int)pos - SERVO_SMOOTH_SPEED, (int)target);
+    servo_pos[i] = pos;
+    setPCA(i, (uint8_t)pos);
   }
 }
 
-bool moverServoHasta(int servoIdx, int target, unsigned long timeoutMs) {
-  if (servoIdx < 0 || servoIdx >= TOTAL_SERVOS) return false;
-
+bool moverServoHasta(uint8_t servoIdx, uint8_t target, unsigned long timeoutMs) {
+  if (servoIdx >= TOTAL_SERVOS) return false;
   servo_target[servoIdx] = target;
   unsigned long start = millis();
   while (servo_pos[servoIdx] != target && millis() - start < timeoutMs) {
     updateServoSmooth();
     delay(10);
   }
-
   return servo_pos[servoIdx] == target;
 }
 
-void cicloServoDispenso(int servoIdx) {
-  moverServoHasta(servoIdx, SERVO_OPEN_ANGLE, 4000);
+// Ciclo completo de un servo: abre → espera → cierra → espera
+void cicloServoDispenso(uint8_t servoIdx) {
+  moverServoHasta(servoIdx, SERVO_OPEN_ANGLE,   4000UL);
   delay(450);
-  moverServoHasta(servoIdx, SERVO_CLOSED_ANGLE, 4000);
+  moverServoHasta(servoIdx, SERVO_CLOSED_ANGLE, 4000UL);
   delay(350);
 }
 
-void ejecutarDispensado(int compartimento, int cantidad) {
-  if (compartimento < 0 || compartimento >= NUM_COMPARTIMENTOS) return;
+// Dispensa 'cantidad' pastillas del compartimento indicado (0-based).
+// Secuencia por repetición:
+//   1. [base+0] abre tapa
+//   2. [base+1] empuja pastilla
+//   3. [base+2] retorna empujador
+void ejecutarDispensado(uint8_t compartimento, uint8_t cantidad) {
+  if (compartimento >= NUM_COMPARTIMENTOS) return;
 
-  int base = compartimento * SERVOS_POR_COMPARTIMENTO;
-  int servo1_idx = base;
-  int servo2_idx = base + 1;
-  int servo3_idx = base + 2;
+  uint8_t base = (uint8_t)(compartimento * SERVOS_POR_COMPARTIMENTO);
+  // base+0 → canal PCA SERVO_CHANNELS[base+0]
+  // base+1 → canal PCA SERVO_CHANNELS[base+1]
+  // base+2 → canal PCA SERVO_CHANNELS[base+2]
 
-  for (int i = 0; i < cantidad; i++) {
-    cicloServoDispenso(servo1_idx);
-    cicloServoDispenso(servo2_idx);
-    cicloServoDispenso(servo3_idx);
+  Serial.print(F("[SERVO] Comp "));
+  Serial.print(compartimento + 1);
+  Serial.print(F(" canales: "));
+  Serial.print(SERVO_CHANNELS[base]);   Serial.print(',');
+  Serial.print(SERVO_CHANNELS[base+1]); Serial.print(',');
+  Serial.println(SERVO_CHANNELS[base+2]);
+
+  for (uint8_t i = 0; i < cantidad; i++) {
+    cicloServoDispenso(base);      // tapa
+    cicloServoDispenso(base + 1);  // empujador
+    cicloServoDispenso(base + 2);  // retorno
   }
 }

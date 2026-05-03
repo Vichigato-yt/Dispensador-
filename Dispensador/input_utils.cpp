@@ -2,87 +2,62 @@
 #include "lcd_ui.h"
 #include "wifi_utils.h"
 
-void buzzerOn() {
-  tone(BUZZER_PIN, 2400);
-}
-
-void buzzerOff() {
-  noTone(BUZZER_PIN);
-  digitalWrite(BUZZER_PIN, LOW);
-}
+void buzzerOn()  { tone(BUZZER_PIN, 2400); }
+void buzzerOff() { noTone(BUZZER_PIN); digitalWrite(BUZZER_PIN, LOW); }
 
 void pruebaBuzzerInicio() {
-  for (int i = 0; i < 2; i++) {
-    buzzerOn();
-    delay(90);
-    buzzerOff();
-    delay(110);
+  for (uint8_t i = 0; i < 2; i++) {
+    buzzerOn();  delay(90);
+    buzzerOff(); delay(110);
   }
-  Serial.println("[BUZZER] Prueba de inicio completada");
+  Serial.println(F("[BUZZER] OK"));
 }
 
 bool esperarConfirmacionUsuario(unsigned long timeoutMs) {
-  Serial.println("[CONFIRM] Esperando confirmacion de usuario...");
-  Serial.print("[CONFIRM] Presione boton en GPIO ");
-  Serial.println(CONFIRM_BUTTON_PIN);
+  Serial.println(F("[CONFIRM] Esperando confirmacion..."));
 
   buzzerOn();
   unsigned long lastBeepChange = millis();
-  bool buzzerActivo = true;
+  bool          buzzerActivo   = true;
 
-  unsigned long start = millis();
-  bool botonActual = digitalRead(CONFIRM_BUTTON_PIN);
-  bool lastRaw = !botonActual;
+  unsigned long start      = millis();
+  bool          lastRaw    = digitalRead(CONFIRM_BUTTON_PIN);
   unsigned long lastChange = millis();
-  unsigned long lastDiag = millis();
-  Serial.print("[CONFIRM] Estado inicial boton: ");
-  Serial.println(botonActual ? "ALTO" : "BAJO");
-  Serial.println("[CONFIRM] Presiona y suelta el boton ahora...");
 
   while (millis() - start < timeoutMs) {
     unsigned long now = millis();
 
+    // Beep intermitente
     if (buzzerActivo) {
       if (now - lastBeepChange >= BUZZER_BEEP_ON_MS) {
         buzzerOff();
-        buzzerActivo = false;
+        buzzerActivo   = false;
         lastBeepChange = now;
       }
     } else if (now - lastBeepChange >= BUZZER_BEEP_OFF_MS) {
       buzzerOn();
-      buzzerActivo = true;
+      buzzerActivo   = true;
       lastBeepChange = now;
     }
 
     bool raw = digitalRead(CONFIRM_BUTTON_PIN);
     if (raw != lastRaw) {
-      lastRaw = raw;
-      lastChange = millis();
-      Serial.print("[CONFIRM] Cambio boton -> ");
-      Serial.println(raw ? "ALTO" : "BAJO");
+      lastRaw    = raw;
+      lastChange = now;
     }
 
-    if (now - lastDiag > 500) {
-      Serial.print("[CONFIRM] Estado actual: ");
-      Serial.print(raw ? "ALTO" : "BAJO");
-      Serial.print(" | Tiempo restante: ");
-      Serial.print((timeoutMs - (now - start)) / 1000);
-      Serial.println("s");
-      lastDiag = now;
-    }
-
-    if ((millis() - lastChange) >= BUTTON_DEBOUNCE_MS && raw == LOW) {
-      Serial.println("[CONFIRM] Pastilla recogida (boton confirmado)");
+    // Botón presionado y debounce superado
+    if ((now - lastChange) >= BUTTON_DEBOUNCE_MS && raw == LOW) {
+      Serial.println(F("[CONFIRM] Pastilla confirmada"));
       buzzerOff();
-      while (digitalRead(CONFIRM_BUTTON_PIN) == LOW) {
-        delay(10);
-      }
+      while (digitalRead(CONFIRM_BUTTON_PIN) == LOW) delay(10);
       return true;
     }
 
-    if (!wifiOk() && (millis() - lastWifiRetry > WIFI_RETRY_INTERVAL_MS)) {
+    // Reintento WiFi si cayó durante la espera
+    if (!wifiOk() && (now - lastWifiRetry > WIFI_RETRY_INTERVAL_MS)) {
       conectarWiFi();
-      lastWifiRetry = millis();
+      lastWifiRetry = now;
     }
 
     updateLCD();
@@ -90,6 +65,6 @@ bool esperarConfirmacionUsuario(unsigned long timeoutMs) {
   }
 
   buzzerOff();
-  Serial.println("[CONFIRM] Timeout: usuario no confirmo toma");
+  Serial.println(F("[CONFIRM] Timeout - no confirmado"));
   return false;
 }

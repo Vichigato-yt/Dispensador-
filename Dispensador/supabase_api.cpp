@@ -1,561 +1,438 @@
 #include "supabase_api.h"
-#include <mbedtls/base64.h>
 
-// ===== HELPER FUNCTIONS =====
+// ===== HELPERS =====
 
-String buildAuthHeader() {
-  return "Bearer " + String(SUPABASE_ANON_KEY);
+// Escribe el header Authorization directo al HTTPClient, sin construir un String
+static void addAuthHeader(HTTPClient& http) {
+  char buf[72];
+  snprintf(buf, sizeof(buf), "Bearer %s", SUPABASE_ANON_KEY);
+  http.addHeader("Authorization", buf);
 }
 
 int jsonToInt(JsonVariantConst value, int defaultValue) {
-  if (value.is<int>() || value.is<long>() || value.is<unsigned long>()) {
-    return value.as<int>();
-  }
+  if (value.is<int>()) return value.as<int>();
   if (value.is<const char*>()) {
-    const char* text = value.as<const char*>();
-    if (text != nullptr && strlen(text) > 0) {
-      return atoi(text);
-    }
+    const char* t = value.as<const char*>();
+    if (t && t[0] != '\0') return atoi(t);
   }
   return defaultValue;
 }
 
 int fieldInt(JsonObjectConst item, const char* key1, const char* key2, int defaultValue) {
-  if (!item[key1].isNull()) {
-    return jsonToInt(item[key1], defaultValue);
-  }
-  if (!item[key2].isNull()) {
-    return jsonToInt(item[key2], defaultValue);
-  }
+  if (!item[key1].isNull()) return jsonToInt(item[key1], defaultValue);
+  if (!item[key2].isNull()) return jsonToInt(item[key2], defaultValue);
   return defaultValue;
 }
 
 const char* fieldStr(JsonObjectConst item, const char* key1, const char* key2, const char* defaultValue) {
-  if (!item[key1].isNull()) {
-    const char* v = item[key1] | defaultValue;
-    return v;
-  }
-  if (!item[key2].isNull()) {
-    const char* v = item[key2] | defaultValue;
-    return v;
-  }
+  if (!item[key1].isNull()) return item[key1] | defaultValue;
+  if (!item[key2].isNull()) return item[key2] | defaultValue;
   return defaultValue;
 }
 
 void addSupabaseHeaders(HTTPClient& http, bool withJsonBody) {
-  http.addHeader("Authorization", buildAuthHeader());
-  http.addHeader("apikey", SUPABASE_ANON_KEY);
-  http.addHeader("Accept", "application/json");
+  addAuthHeader(http);
+  http.addHeader("apikey",     SUPABASE_ANON_KEY);
+  http.addHeader("Accept",     "application/json");
   http.addHeader("Connection", "close");
-
   if (withJsonBody) {
     http.addHeader("Content-Type", "application/json");
-    http.addHeader("Prefer", "return=minimal");
+    http.addHeader("Prefer",       "return=minimal");
   }
 }
 
 void diagnosticoConexionSupabase() {
   if (!wifiOk()) return;
-
   IPAddress ip;
   if (!WiFi.hostByName(SUPABASE_HOST, ip)) {
-    Serial.println("[NET] DNS fallo para Supabase");
+    Serial.println(F("[NET] DNS fallo para Supabase"));
     return;
   }
-
-  Serial.print("[NET] Supabase DNS: ");
+  Serial.print(F("[NET] Supabase: "));
   Serial.println(ip);
 
-  WiFiClientSecure testClient;
-  testClient.setInsecure();
-  testClient.setTimeout(5);
-
-  bool ok = testClient.connect(SUPABASE_HOST, 443);
-  Serial.print("[NET] TCP 443: ");
-  Serial.println(ok ? "OK" : "FALLO");
-  testClient.stop();
+  WiFiClientSecure c;
+  c.setInsecure();
+  c.setTimeout(5);
+  Serial.print(F("[NET] TCP 443: "));
+  Serial.println(c.connect(SUPABASE_HOST, 443) ? F("OK") : F("FALLO"));
+  c.stop();
 }
 
-// ===== EMAIL FUNCTIONS =====
+// ===== EMAIL (SMTP manual con mbedTLS base64) =====
 
 #if ENABLE_EMAIL_NOTIFICATIONS
 
-static String smtpBase64(const String& input) {
+// Codifica en base64 usando mbedTLS (ya incluido en ESP32 Arduino core)
+static bool b64Encode(const char* input, char* outBuf, size_t outSize) {
   size_t needed = 0;
   mbedtls_base64_encode(nullptr, 0, &needed,
-                        reinterpret_cast<const unsigned char*>(input.c_str()),
-                        input.length());
-  if (needed == 0) return "";
-
-  String out;
-  out.reserve(needed + 2);
-  unsigned char encoded[256];
-  if (needed > sizeof(encoded)) return "";
-
-  if (mbedtls_base64_encode(encoded, sizeof(encoded), &needed,
-                            reinterpret_cast<const unsigned char*>(input.c_str()),
-                            input.length()) != 0) {
-    return "";
-  }
-
-  for (size_t i = 0; i < needed; i++) out += static_cast<char>(encoded[i]);
-  return out;
+    reinterpret_cast<const unsigned char*>(input), strlen(input));
+  if (needed == 0 || needed >= outSize) return false;
+  size_t written = 0;
+  return mbedtls_base64_encode(
+    reinterpret_cast<unsigned char*>(outBuf), outSize, &written,
+    reinterpret_cast<const unsigned char*>(input), strlen(input)) == 0;
 }
 
-static bool smtpExpect(WiFiClientSecure& client, int expectedCode) {
-  unsigned long start = millis();
-  while (!client.available() && millis() - start < 5000) delay(5);
-  if (!client.available()) return false;
-
+// Lee la respuesta SMTP y devuelve el código numérico (3 dígitos)
+static int smtpReadCode(WiFiClientSecure& c) {
+  unsigned long t = millis();
+  while (!c.available() && millis() - t < 5000UL) delay(5);
+  if (!c.available()) return -1;
   int code = 0;
-  while (client.available()) {
-    String line = client.readStringUntil('\n');
+  while (c.available()) {
+    String line = c.readStringUntil('\n');
     line.trim();
-    if (line.length() >= 3 && isDigit(line[0]) && isDigit(line[1]) && isDigit(line[2])) {
-      code = line.substring(0, 3).toInt();
-      if (line.length() >= 4 && line[3] == ' ') break;
-    }
+    if (line.length() >= 3) code = line.substring(0, 3).toInt();
+    if (line.length() < 4 || line[3] == ' ') break;
   }
-
-  return code == expectedCode;
+  return code;
 }
 
-static bool smtpCommand(WiFiClientSecure& client, const String& cmd, int expectedCode) {
-  client.print(cmd);
-  client.print("\r\n");
-  return smtpExpect(client, expectedCode);
-}
-
-static String passwordSinEspacios() {
-  String pass = String(AUTHOR_PASSWORD);
-  pass.replace(" ", "");
-  return pass;
+static bool smtpSend(WiFiClientSecure& c, const char* cmd, int expect) {
+  c.print(cmd); c.print(F("\r\n"));
+  return smtpReadCode(c) == expect;
 }
 
 bool credencialesEmailConfiguradas() {
-  String author = String(AUTHOR_EMAIL);
-  String pass = String(AUTHOR_PASSWORD);
-  if (!author.endsWith("@gmail.com")) return false;
-  if (author.startsWith("YOUR_")) return false;
-  if (pass.startsWith("YOUR_")) return false;
+  if (strstr(AUTHOR_EMAIL, "@gmail.com") == nullptr)  return false;
+  if (strncmp(AUTHOR_EMAIL,    "YOUR_", 5) == 0)       return false;
+  if (strncmp(AUTHOR_PASSWORD, "YOUR_", 5) == 0)       return false;
   return true;
 }
 
-bool correoValido(const char* correo) {
-  if (correo == nullptr) return false;
-  String c = String(correo);
-  if (c.length() < 6) return false;
-  if (c.indexOf('@') < 1) return false;
-  if (c.indexOf('.') < 3) return false;
-  return true;
+bool correoValido(const char* c) {
+  if (!c || c[0] == '\0' || strlen(c) < 6) return false;
+  return strchr(c, '@') != nullptr && strchr(c, '.') != nullptr;
 }
 
-void detectarCorreosReceptores(
-  JsonObjectConst item,
-  const char** correoPaciente,
-  const char** correoCuidador
-) {
-  if (correoPaciente) *correoPaciente = "";
-  if (correoCuidador) *correoCuidador = "";
+void detectarCorreosReceptores(JsonObjectConst item,
+                               const char** correoPaciente,
+                               const char** correoCuidador) {
+  if (correoPaciente)  *correoPaciente  = "";
+  if (correoCuidador)  *correoCuidador  = "";
 
-  JsonVariantConst usuario = item["usuario"];
-  if (!usuario.isNull() && usuario.is<JsonObjectConst>()) {
-    JsonObjectConst u = usuario.as<JsonObjectConst>();
-    const char* e = fieldStr(u, "email", "correo", "");
-    const char* rol = fieldStr(u, "rol", "role", "");
-    if (strlen(e) > 0) {
-      if (strcmp(rol, "paciente") == 0) {
-        if (correoPaciente) *correoPaciente = e;
-      } else if (strcmp(rol, "cuidador") == 0) {
-        if (correoCuidador) *correoCuidador = e;
-      } else if (correoCuidador && strlen(*correoCuidador) == 0) {
-        *correoCuidador = e;
-      }
-    }
-  }
+  JsonVariantConst usr = item["usuario"];
+  if (usr.isNull() || !usr.is<JsonObjectConst>()) return;
+  JsonObjectConst u   = usr.as<JsonObjectConst>();
+  const char*     e   = fieldStr(u, "email", "correo", "");
+  const char*     rol = fieldStr(u, "rol",   "role",   "");
+  if (e[0] == '\0') return;
+
+  if      (strcmp(rol, "paciente")  == 0) { if (correoPaciente) *correoPaciente = e; }
+  else if (strcmp(rol, "cuidador")  == 0) { if (correoCuidador) *correoCuidador = e; }
+  else if (correoCuidador && (*correoCuidador)[0] == '\0') { *correoCuidador = e; }
 }
 
+// Envía email al destinatario fijo ALERT_EMAIL (aaronmachuca19@gmail.com)
+// más cualquier correo de paciente/cuidador que devuelva la BD.
 bool enviarCorreoNoConfirmado(
-  int id,
-  int comp,
-  int medicamentoId,
+  int         id,
+  uint8_t     comp,
+  int         medicamentoId,
   const char* medicamentoNombre,
   const char* usuarioNombre,
   const char* correoPaciente,
   const char* correoCuidador
 ) {
-  if (!credencialesEmailConfiguradas()) return false;
+  if (!credencialesEmailConfiguradas()) {
+    Serial.println(F("[EMAIL] Credenciales no configuradas"));
+    return false;
+  }
   if (!wifiOk()) {
     conectarWiFi();
-    if (!wifiOk()) return false;
+    if (!wifiOk()) { Serial.println(F("[EMAIL] Sin WiFi")); return false; }
   }
 
-  const char* recipients[2];
-  int recipientCount = 0;
-  if (correoValido(correoPaciente)) {
-    recipients[recipientCount++] = correoPaciente;
-  }
-  if (correoValido(correoCuidador)) {
-    if (!correoValido(correoPaciente) || strcmp(correoPaciente, correoCuidador) != 0) {
-      recipients[recipientCount++] = correoCuidador;
-    }
+  // Limpia la contraseña de espacios en un buffer de stack
+  char smtpPass[32] = {};
+  uint8_t j = 0;
+  for (uint8_t i = 0; AUTHOR_PASSWORD[i] && j < sizeof(smtpPass) - 1; i++) {
+    if (AUTHOR_PASSWORD[i] != ' ') smtpPass[j++] = AUTHOR_PASSWORD[i];
   }
 
-  if (recipientCount == 0) {
-    if (correoValido(ALERT_RECIPIENT_EMAIL)) {
-      recipients[recipientCount++] = ALERT_RECIPIENT_EMAIL;
-    } else if (correoValido(AUTHOR_EMAIL)) {
-      recipients[recipientCount++] = AUTHOR_EMAIL;
-    } else {
-      return false;
-    }
+  // Codifica credenciales en base64
+  char b64User[64] = {}, b64Pass[64] = {};
+  if (!b64Encode(AUTHOR_EMAIL, b64User, sizeof(b64User)) ||
+      !b64Encode(smtpPass,     b64Pass, sizeof(b64Pass))) {
+    Serial.println(F("[EMAIL] Error base64"));
+    return false;
   }
 
-  String texto = F("Medicamento no confirmado en compartimento ");
-  texto += String(comp + 1);
-  if (medicamentoNombre && strlen(medicamentoNombre) > 0) {
-    texto += F(" - ");
-    texto += medicamentoNombre;
+  // Lista de destinatarios: siempre incluye ALERT_EMAIL, más los de la BD si difieren
+  const char* rcpts[3];
+  uint8_t     rcptCount = 0;
+  rcpts[rcptCount++] = ALERT_EMAIL;   // aaronmachuca19@gmail.com siempre
+
+  if (correoValido(correoPaciente) && strcmp(correoPaciente, ALERT_EMAIL) != 0)
+    rcpts[rcptCount++] = correoPaciente;
+  if (correoValido(correoCuidador) &&
+      strcmp(correoCuidador, ALERT_EMAIL) != 0 &&
+      (!correoValido(correoPaciente) || strcmp(correoCuidador, correoPaciente) != 0))
+    rcpts[rcptCount++] = correoCuidador;
+
+  // Cuerpo del email
+  char body[100] = {};
+  if (medicamentoNombre && medicamentoNombre[0] != '\0') {
+    snprintf(body, sizeof(body),
+             "Medicamento no confirmado - Compartimento %u: %s",
+             (unsigned)(comp + 1), medicamentoNombre);
+  } else {
+    snprintf(body, sizeof(body),
+             "Medicamento no confirmado - Compartimento %u",
+             (unsigned)(comp + 1));
   }
 
+  // Conexión SMTP TLS
   WiFiClientSecure smtp;
   smtp.setInsecure();
   smtp.setTimeout(10);
-  if (!smtp.connect(SMTP_HOST, SMTP_PORT)) return false;
-  if (!smtpExpect(smtp, 220)) return false;
-
-  if (!smtpCommand(smtp, "EHLO esp32.local", 250)) return false;
-  if (!smtpCommand(smtp, "AUTH LOGIN", 334)) return false;
-
-  String b64User = smtpBase64(String(AUTHOR_EMAIL));
-  String b64Pass = smtpBase64(passwordSinEspacios());
-  if (b64User.length() == 0 || b64Pass.length() == 0) return false;
-
-  if (!smtpCommand(smtp, b64User, 334)) return false;
-  if (!smtpCommand(smtp, b64Pass, 235)) return false;
-  if (!smtpCommand(smtp, "MAIL FROM:<" + String(AUTHOR_EMAIL) + ">", 250)) return false;
-
-  for (int i = 0; i < recipientCount; i++) {
-    if (!smtpCommand(smtp, "RCPT TO:<" + String(recipients[i]) + ">", 250)) return false;
+  if (!smtp.connect(SMTP_HOST, SMTP_PORT)) {
+    Serial.println(F("[EMAIL] No se pudo conectar al SMTP"));
+    return false;
   }
 
-  if (!smtpCommand(smtp, "DATA", 354)) return false;
-  smtp.print(F("From: ESP32 Dispensador <"));
-  smtp.print(AUTHOR_EMAIL);
-  smtp.print(F(">\r\nSubject: Atencion - Medicamento no consumido\r\n"));
-  smtp.print(F("Content-Type: text/plain; charset=utf-8\r\n\r\n"));
-  smtp.print(texto);
-  smtp.print(F("\r\n.\r\n"));
-  if (!smtpExpect(smtp, 250)) return false;
+  if (smtpReadCode(smtp) != 220)                      { smtp.stop(); return false; }
+  if (!smtpSend(smtp, "EHLO esp32.local",        250)) { smtp.stop(); return false; }
+  if (!smtpSend(smtp, "AUTH LOGIN",              334)) { smtp.stop(); return false; }
+  if (!smtpSend(smtp, b64User,                  334)) { smtp.stop(); return false; }
+  if (!smtpSend(smtp, b64Pass,                  235)) { smtp.stop(); return false; }
 
-  smtpCommand(smtp, "QUIT", 221);
+  // MAIL FROM
+  char cmd[80] = {};
+  snprintf(cmd, sizeof(cmd), "MAIL FROM:<%s>", AUTHOR_EMAIL);
+  if (!smtpSend(smtp, cmd, 250)) { smtp.stop(); return false; }
+
+  // RCPT TO para cada destinatario
+  for (uint8_t i = 0; i < rcptCount; i++) {
+    snprintf(cmd, sizeof(cmd), "RCPT TO:<%s>", rcpts[i]);
+    if (!smtpSend(smtp, cmd, 250)) { smtp.stop(); return false; }
+  }
+
+  if (!smtpSend(smtp, "DATA", 354)) { smtp.stop(); return false; }
+
+  smtp.print(F("From: ESP32 Dispensador <")); smtp.print(AUTHOR_EMAIL); smtp.print(F(">\r\n"));
+  smtp.print(F("Subject: ALERTA - Medicamento no tomado\r\n"));
+  smtp.print(F("Content-Type: text/plain; charset=utf-8\r\n\r\n"));
+  smtp.print(body);
+  smtp.print(F("\r\n.\r\n"));
+
+  bool ok = (smtpReadCode(smtp) == 250);
+  smtpSend(smtp, "QUIT", 221);
   smtp.stop();
-  return true;
+
+  Serial.print(F("[EMAIL] Envio "));
+  Serial.println(ok ? F("OK") : F("FALLO"));
+  return ok;
 }
 
-#endif
+#endif  // ENABLE_EMAIL_NOTIFICATIONS
 
-// ===== SUPABASE API CALLS =====
+// ===== SUPABASE API =====
 
-int requestSupabase(
-  const char* endpoint,
-  const char* method,
-  const String* requestBody,
-  String* responseBody
-) {
+int requestSupabase(const char* endpoint, const char* method,
+                    const String* requestBody, String* responseBody) {
   int code = -1;
-
-  Serial.print("[SUPABASE] ");
-  Serial.print(method);
-  Serial.print(" ");
-  Serial.println(endpoint);
-
-  for (int intento = 1; intento <= HTTP_RETRIES; intento++) {
-    if (!wifiOk()) {
-      conectarWiFi();
-      if (!wifiOk()) break;
-    }
+  for (uint8_t intento = 1; intento <= HTTP_RETRIES; intento++) {
+    if (!wifiOk()) { conectarWiFi(); if (!wifiOk()) break; }
 
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(HTTP_READ_TIMEOUT / 1000);
 
     HTTPClient http;
-    bool beginOk = http.begin(client, SUPABASE_HOST, 443, endpoint, true);
-
-    if (!beginOk) {
-      code = -1;
-      Serial.println("[SUPABASE] http.begin fallo");
-      delay(250);
-      continue;
+    if (!http.begin(client, SUPABASE_HOST, 443, endpoint, true)) {
+      delay(250); continue;
     }
-
     http.setConnectTimeout(HTTP_CONNECT_TIMEOUT);
     http.setTimeout(HTTP_READ_TIMEOUT);
     http.setReuse(false);
     addSupabaseHeaders(http, requestBody != nullptr);
 
-    if (strcmp(method, "GET") == 0) {
-      code = http.GET();
-    } else {
-      code = http.sendRequest(method, requestBody ? *requestBody : "");
-    }
+    code = (strcmp(method, "GET") == 0)
+           ? http.GET()
+           : http.sendRequest(method, requestBody ? *requestBody : "");
 
-    Serial.print("[SUPABASE] intento ");
-    Serial.print(intento);
-    Serial.print(" -> HTTP ");
-    Serial.println(code);
-
-    if (code > 0 && responseBody != nullptr) {
-      *responseBody = http.getString();
-      Serial.print("[SUPABASE] bytes recibidos: ");
-      Serial.println(responseBody->length());
-    }
-
+    if (code > 0 && responseBody) *responseBody = http.getString();
     http.end();
-
     if (code > 0) return code;
     delay(250);
   }
-
   return code;
 }
 
-bool registrarDispenso(
-  int id,
-  int comp,
-  int medicamentoId,
-  const char* medicamentoNombre,
-  const char* resultado,
-  const char* observaciones
-) {
+bool registrarDispenso(int id, uint8_t comp, int medicamentoId,
+                       const char* medicamentoNombre,
+                       const char* resultado,
+                       const char* observaciones) {
   if (!wifiOk()) return false;
 
-  char fecha[11] = {0};
-  char hora[9] = {0};
-  int16_t anio = 0;
-  int16_t diaAnio = 0;
-  int16_t minutoActual = 0;
-  bool tiempoOk = obtenerFechaHoraLocal(fecha, hora, &anio, &diaAnio, &minutoActual);
-
-  if (!tiempoOk) {
-    strncpy(fecha, "1970-01-01", sizeof(fecha) - 1);
-    strncpy(hora, "00:00:00", sizeof(hora) - 1);
+  char    fechaBuf[11] = {}, horaBuf[9] = {};
+  int16_t anio = 0, diaAnio = 0, minutoActual = 0;
+  if (!obtenerFechaHoraLocal(fechaBuf, horaBuf, &anio, &diaAnio, &minutoActual)) {
+    strncpy(fechaBuf, "1970-01-01", sizeof(fechaBuf) - 1);
+    strncpy(horaBuf,  "00:00:00",   sizeof(horaBuf)  - 1);
   }
 
   StaticJsonDocument<256> doc;
-  doc["id_programacion"] = id;
-  doc["id_compartimento"] = comp + 1;
-  doc["fecha"] = fecha;
-  doc["hora"] = hora;
-  doc["id_medicamento"] = medicamentoId;
-  doc["medicamento"] = medicamentoNombre ? medicamentoNombre : "";
-  doc["resultado"] = resultado;
-  doc["observaciones"] = observaciones ? observaciones : "registro_esp32";
+  doc["id_programacion"]  = id;
+  doc["id_compartimento"] = (int)(comp + 1);
+  doc["fecha"]            = fechaBuf;
+  doc["hora"]             = horaBuf;
+  doc["id_medicamento"]   = medicamentoId;
+  doc["medicamento"]      = medicamentoNombre ? medicamentoNombre : "";
+  doc["resultado"]        = resultado;
+  doc["observaciones"]    = observaciones ? observaciones : "registro_esp32";
 
   String json;
   serializeJson(doc, json);
-
   int code = requestSupabase(ENDPOINT_REGISTRO, "POST", &json, nullptr);
+  if (code == 200 || code == 201) return true;
 
-  if (!(code == 200 || code == 201)) {
-    StaticJsonDocument<256> fallback;
-    fallback["id_programacion"] = id;
-    fallback["fecha"] = fecha;
-    fallback["hora"] = hora;
-    fallback["resultado"] = resultado;
+  // Fallback mínimo con observaciones compactas
+  char obs[96] = {};
+  snprintf(obs, sizeof(obs), "comp=%u,med_id=%d,med=%s,obs=%s",
+           (unsigned)(comp + 1), medicamentoId,
+           medicamentoNombre ? medicamentoNombre : "",
+           observaciones     ? observaciones     : "");
 
-    String obs = "comp=" + String(comp + 1) +
-                 ",med_id=" + String(medicamentoId) +
-                 ",med=" + String(medicamentoNombre ? medicamentoNombre : "") +
-                 ",obs=" + String(observaciones ? observaciones : "");
-    fallback["observaciones"] = obs;
+  StaticJsonDocument<200> fb;
+  fb["id_programacion"] = id;
+  fb["fecha"]           = fechaBuf;
+  fb["hora"]            = horaBuf;
+  fb["resultado"]       = resultado;
+  fb["observaciones"]   = obs;
 
-    String fallbackJson;
-    serializeJson(fallback, fallbackJson);
-    code = requestSupabase(ENDPOINT_REGISTRO, "POST", &fallbackJson, nullptr);
-  }
-
+  String fbJson;
+  serializeJson(fb, fbJson);
+  code = requestSupabase(ENDPOINT_REGISTRO, "POST", &fbJson, nullptr);
   return (code == 200 || code == 201);
 }
 
 void enviarEstado() {
   if (!wifiOk()) return;
-
-  StaticJsonDocument<128> doc;
-  doc["estado"] = "conectado";
+  StaticJsonDocument<64> doc;
+  doc["estado"]      = "conectado";
   doc["ultimo_ping"] = (unsigned long)time(nullptr);
-
   String json;
   serializeJson(doc, json);
-
   requestSupabase(ENDPOINT_ESTADO, "PATCH", &json, nullptr);
 }
 
 bool procesarProgramacion() {
   if (!wifiOk()) return false;
 
-  Serial.println("[SCHED] Consultando programacion...");
   String payload;
   int code = requestSupabase(ENDPOINT_PROGRAMACION, "GET", nullptr, &payload);
 
+  // Fallback si el join devuelve 300
   if (code == 300) {
-    Serial.println("[SCHED] HTTP 300: consulta ambigua en endpoint principal");
-    if (payload.length() > 0) {
-      Serial.print("[SCHED] Detalle 300: ");
-      Serial.println(payload);
-    }
-
-    String fallbackPayload;
-    int fallbackCode = requestSupabase(ENDPOINT_PROGRAMACION_FALLBACK, "GET", nullptr, &fallbackPayload);
-    Serial.print("[SCHED] Fallback HTTP: ");
-    Serial.println(fallbackCode);
-    if (fallbackCode == 200) {
-      payload = fallbackPayload;
-      code = 200;
-      Serial.println("[SCHED] Fallback OK, se usa programacion sin join usuario");
-    }
+    Serial.println(F("[SCHED] HTTP 300 - usando fallback sin join"));
+    String fbPayload;
+    int fbCode = requestSupabase(ENDPOINT_PROGRAMACION_FALLBACK, "GET", nullptr, &fbPayload);
+    if (fbCode == 200) { payload = fbPayload; code = 200; }
   }
 
   if (code != 200) {
-    Serial.print("[SCHED] Error HTTP al leer programacion: ");
-    Serial.println(code);
-    if (payload.length() > 0) {
-      Serial.print("[SCHED] Payload error: ");
-      Serial.println(payload);
-    }
+    Serial.print(F("[SCHED] Error HTTP: ")); Serial.println(code);
     return false;
   }
 
   StaticJsonDocument<3072> doc;
-  DeserializationError jsonError = deserializeJson(doc, payload);
-  if (jsonError) {
-    Serial.print("[SCHED] JSON invalido: ");
-    Serial.println(jsonError.c_str());
+  if (deserializeJson(doc, payload)) {
+    Serial.println(F("[SCHED] JSON invalido"));
     return false;
   }
+
   JsonArray arr = doc.as<JsonArray>();
+  Serial.print(F("[SCHED] Registros: ")); Serial.println(arr.size());
 
-  char ahoraFecha[11] = {0};
-  char ahoraHora[9] = {0};
-  obtenerFechaHoraLocal(ahoraFecha, ahoraHora, nullptr, nullptr, nullptr);
-  Serial.print("[SCHED] Registros recibidos: ");
-  Serial.print(arr.size());
-  Serial.print(" | Hora local: ");
-  Serial.print(ahoraFecha);
-  Serial.print(" ");
-  Serial.println(ahoraHora);
-
-  uint16_t activos = 0;
-  uint16_t enVentana = 0;
-  uint16_t ejecutados = 0;
+  uint8_t ejecutados = 0;
 
   for (JsonObject item : arr) {
-    int id = fieldInt(item, "id_programacion", "id", 0);
-    int compartimento = fieldInt(item, "id_compartimento", "compartimento", 0);
-    int cantidad = fieldInt(item, "cantidad", "cantidad_dosis", 1);
-    int medicamentoId = fieldInt(item, "id_medicamento", "medicamento_id", 0);
-    const char* medicamentoNombre = fieldStr(item, "medicamento", "nombre_medicamento", "");
-    const char* estado = item["estado"] | "activo";
-    const char* horaDispenso = fieldStr(item, "hora_dispenso", "hora", "");
+    int         id                = fieldInt(item, "id_programacion",    "id",                 0);
+    uint8_t     compartimento     = (uint8_t)fieldInt(item, "id_compartimento", "compartimento",     0);
+    uint8_t     cantidad          = (uint8_t)fieldInt(item, "cantidad",          "cantidad_dosis",    1);
+    int         medicamentoId     = fieldInt(item, "id_medicamento",     "medicamento_id",     0);
+    const char* medicamentoNombre = fieldStr(item, "medicamento",        "nombre_medicamento", "");
+    const char* estado            = item["estado"] | "activo";
+    const char* horaDispenso      = fieldStr(item, "hora_dispenso",      "hora",               "");
 
-    if (strcmp(estado, "inactivo") == 0) continue;
-    activos++;
+    if (strcmp(estado, "inactivo") == 0)                            continue;
+    if (!horaEnVentana(horaDispenso))                               continue;
 
-    if (!horaEnVentana(horaDispenso)) continue;
-    enVentana++;
-
-    char fecha[11] = {0};
-    char hora[9] = {0};
-    int16_t anio = 0;
-    int16_t diaAnio = 0;
-    int16_t minutoActual = 0;
-    if (!obtenerFechaHoraLocal(fecha, hora, &anio, &diaAnio, &minutoActual)) continue;
+    char    fechaBuf[11] = {}, horaBuf[9] = {};
+    int16_t anio = 0, diaAnio = 0, minutoActual = 0;
+    if (!obtenerFechaHoraLocal(fechaBuf, horaBuf, &anio, &diaAnio, &minutoActual)) continue;
 
     int16_t minutoProgramado = 0;
-    if (!parseHoraProgramada(horaDispenso, minutoProgramado)) continue;
+    if (!parseHoraProgramada(horaDispenso, minutoProgramado))       continue;
+    if (slotYaEjecutado(id, anio, diaAnio, minutoProgramado))       continue;
+    if (id <= 0 || compartimento == 0 || compartimento > NUM_COMPARTIMENTOS) continue;
 
-    if (slotYaEjecutado(id, anio, diaAnio, minutoProgramado)) continue;
+    compartimento--;  // 0-based
 
-    if (id <= 0 || compartimento <= 0 || compartimento > NUM_COMPARTIMENTOS) continue;
-
-    compartimento--;
-
+    // Verificar duplicado reciente
     bool found = false;
     for (uint8_t i = 0; i < recientesCount; i++) {
       if (recientes[i].id == id && millis() - recientes[i].ts < DUPLICATE_WINDOW_MS) {
-        found = true;
-        break;
+        found = true; break;
       }
     }
     if (found) continue;
-
     if (millis() - lastDispenseAt[compartimento] < DISPENSE_COOLDOWN_MS) continue;
 
-    Serial.print("[SCHED] Ejecutando id=");
+    Serial.print(F("[SCHED] Dispensando id="));
     Serial.print(id);
-    Serial.print(" comp=");
+    Serial.print(F(" comp="));
     Serial.print(compartimento + 1);
-    Serial.print(" cantidad=");
-    Serial.print(cantidad);
-    Serial.print(" horaProg=");
+    Serial.print(F(" hora="));
     Serial.println(horaDispenso);
 
-    setLcdState(LCD_MODE_DISPENSO, static_cast<int8_t>(compartimento), static_cast<uint8_t>(cantidad), medicamentoNombre);
+    // --- DISPENSADO ---
+    setLcdState(LCD_MODE_DISPENSO, (int8_t)compartimento, cantidad, medicamentoNombre);
     updateLCD();
     ejecutarDispensado(compartimento, cantidad);
     lastDispenseAt[compartimento] = millis();
-
     marcarSlotEjecutado(id, anio, diaAnio, minutoProgramado);
 
-    setLcdState(LCD_MODE_CONFIRM, static_cast<int8_t>(compartimento), static_cast<uint8_t>(cantidad), medicamentoNombre);
+    // --- ESPERA CONFIRMACIÓN (60 s) ---
+    setLcdState(LCD_MODE_CONFIRM, (int8_t)compartimento, cantidad, medicamentoNombre);
     updateLCD();
     bool confirmado = esperarConfirmacionUsuario(CONFIRM_TIMEOUT_MS);
     setLcdState(LCD_MODE_IDLE, -1, 0, "");
     updateLCD();
 
     if (confirmado) {
-      registrarDispenso(
-        id,
-        compartimento,
-        medicamentoId,
-        medicamentoNombre,
-        "exitoso",
-        "confirmado_usuario"
-      );
+      Serial.println(F("[SCHED] Toma confirmada"));
+      registrarDispenso(id, compartimento, medicamentoId,
+                        medicamentoNombre, "exitoso", "confirmado_usuario");
     } else {
-      registrarDispenso(
-        id,
-        compartimento,
-        medicamentoId,
-        medicamentoNombre,
-        "error",
-        "no_confirmado_usuario"
-      );
+      // --- NO CONFIRMADO → email a aaronmachuca19@gmail.com ---
+      Serial.println(F("[SCHED] No confirmado - registrando y enviando email"));
+      registrarDispenso(id, compartimento, medicamentoId,
+                        medicamentoNombre, "error", "no_confirmado_usuario");
+
 #if ENABLE_EMAIL_NOTIFICATIONS
-      const char* usuarioNombre = "";
+      const char* usuarioNombre  = "";
+      const char* correoPaciente = "";
+      const char* correoCuidador = "";
+
       JsonVariantConst usuarioVar = item["usuario"];
       if (!usuarioVar.isNull() && usuarioVar.is<JsonObjectConst>()) {
         JsonObjectConst u = usuarioVar.as<JsonObjectConst>();
         usuarioNombre = fieldStr(u, "nombre", "name", "");
       }
-
-      const char* correoPaciente = "";
-      const char* correoCuidador = "";
       detectarCorreosReceptores(item, &correoPaciente, &correoCuidador);
 
-      enviarCorreoNoConfirmado(
-        id,
-        compartimento,
-        medicamentoId,
-        medicamentoNombre,
-        usuarioNombre,
-        correoPaciente,
-        correoCuidador
-      );
+      enviarCorreoNoConfirmado(id, compartimento, medicamentoId,
+                               medicamentoNombre, usuarioNombre,
+                               correoPaciente, correoCuidador);
 #endif
     }
 
+    // Registrar en recientes para dedup
     if (recientesCount < RECIENTES_MAX) {
       recientes[recientesCount].id = id;
       recientes[recientesCount].ts = millis();
@@ -565,12 +442,10 @@ bool procesarProgramacion() {
     ejecutados++;
   }
 
-  Serial.print("[SCHED] Resumen -> activos: ");
-  Serial.print(activos);
-  Serial.print(", enVentana: ");
-  Serial.print(enVentana);
-  Serial.print(", ejecutados: ");
-  Serial.println(ejecutados);
+  if (ejecutados > 0) {
+    Serial.print(F("[SCHED] Ejecutados: "));
+    Serial.println(ejecutados);
+  }
 
   return true;
 }
